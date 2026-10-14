@@ -246,6 +246,15 @@ func (s *StartedService) followInstance(ctx context.Context, run func(ctx contex
 }
 
 func (s *StartedService) StartOrReloadService(ctx context.Context, profileContent string, options *OverrideOptions) error {
+	if options != nil && options.PriorityFailoverJSON != "" {
+		parsed, err := parseConfig(s.ctx, profileContent)
+		if err != nil {
+			return err
+		}
+		if _, err = ParsePriorityFailover(parsed, options.PriorityFailoverJSON); err != nil {
+			return err
+		}
+	}
 	s.interruptStart()
 	s.lifecycleAccess.Lock()
 	defer s.lifecycleAccess.Unlock()
@@ -744,6 +753,8 @@ func (s *StartedService) URLTest(ctx context.Context, request *URLTestRequest) (
 }
 
 func (s *StartedService) SelectOutbound(ctx context.Context, request *SelectOutboundRequest) (*emptypb.Empty, error) {
+	s.lifecycleAccess.Lock()
+	defer s.lifecycleAccess.Unlock()
 	s.serviceAccess.RLock()
 	boxService := s.instance
 	s.serviceAccess.RUnlock()
@@ -757,6 +768,12 @@ func (s *StartedService) SelectOutbound(ctx context.Context, request *SelectOutb
 	selector, isSelector := outboundGroup.(*group.Selector)
 	if !isSelector {
 		return nil, status.Error(codes.InvalidArgument, "outbound is not a selector: "+request.GroupTag)
+	}
+	if boxService.priorityFailover != nil && request.GroupTag == boxService.priorityFailover.policy.Selector {
+		if err := boxService.priorityFailover.Manual(request.OutboundTag); err != nil {
+			return nil, err
+		}
+		return &emptypb.Empty{}, nil
 	}
 	if !selector.SelectOutbound(request.OutboundTag) {
 		return nil, status.Error(codes.NotFound, "outbound not found in selector: "+request.OutboundTag)

@@ -44,6 +44,7 @@ import (
 var _ adapter.SimpleLifecycle = (*Box)(nil)
 
 type Box struct {
+	onOutboundsReady    func(context.Context) error
 	ctx                 context.Context
 	createdAt           time.Time
 	debugOptions        option.DebugOptions
@@ -66,6 +67,7 @@ type Box struct {
 }
 
 type Options struct {
+	OnOutboundsReady func(context.Context) error
 	option.Options
 	Context                    context.Context
 	PlatformLogWriter          log.PlatformWriter
@@ -469,6 +471,7 @@ func New(options Options) (*Box, error) {
 	}
 	return &Box{
 		ctx:                 ctx,
+		onOutboundsReady:    options.OnOutboundsReady,
 		network:             networkManager,
 		endpoint:            endpointManager,
 		inbound:             inboundManager,
@@ -555,6 +558,11 @@ func (s *Box) preStart() error {
 	err = adapter.StartNamed(s.ctx, s.logger, adapter.StartStateStart, []adapter.LifecycleService{s.httpClientService})
 	if err != nil {
 		return err
+	}
+	if s.onOutboundsReady != nil {
+		if err = s.onOutboundsReady(s.ctx); err != nil {
+			return err
+		}
 	}
 	err = adapter.Start(s.ctx, s.logger, adapter.StartStateStart, s.router, s.dnsRouter)
 	if err != nil {

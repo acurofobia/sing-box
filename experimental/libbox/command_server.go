@@ -206,9 +206,10 @@ func (s *CommandServer) Close() {
 }
 
 type OverrideOptions struct {
-	AutoRedirect   bool
-	IncludePackage StringIterator
-	ExcludePackage StringIterator
+	PriorityFailoverJSON string
+	AutoRedirect         bool
+	IncludePackage       StringIterator
+	ExcludePackage       StringIterator
 }
 
 func (s *CommandServer) StartOrReloadService(configContent string, options *OverrideOptions) error {
@@ -217,9 +218,10 @@ func (s *CommandServer) StartOrReloadService(configContent string, options *Over
 		copyConfigSnapshot(filepath.Join(sWorkingPath, powerreport.DraftDirectoryName))
 	}
 	err := s.StartedService.StartOrReloadService(s.ctx, configContent, &daemon.OverrideOptions{
-		AutoRedirect:   options.AutoRedirect,
-		IncludePackage: iteratorToArray(options.IncludePackage),
-		ExcludePackage: iteratorToArray(options.ExcludePackage),
+		PriorityFailoverJSON: options.PriorityFailoverJSON,
+		AutoRedirect:         options.AutoRedirect,
+		IncludePackage:       iteratorToArray(options.IncludePackage),
+		ExcludePackage:       iteratorToArray(options.ExcludePackage),
 	})
 	if err != nil {
 		return E.Cause(err, "start or reload service")

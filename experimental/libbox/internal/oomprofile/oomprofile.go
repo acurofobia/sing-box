@@ -18,19 +18,9 @@ type stackRecord struct {
 	Stack []uintptr
 }
 
-type memProfileRecord struct {
-	AllocBytes, FreeBytes     int64
-	AllocObjects, FreeObjects int64
-	Stack                     []uintptr
-}
-
-func (r *memProfileRecord) InUseBytes() int64 {
-	return r.AllocBytes - r.FreeBytes
-}
-
-func (r *memProfileRecord) InUseObjects() int64 {
-	return r.AllocObjects - r.FreeObjects
-}
+// Use the public record: Go 1.27 changed the private runtime record layout.
+// runtime.MemProfile retains its supported ABI and limits stacks to 32 frames.
+type memProfileRecord = runtime.MemProfileRecord
 
 type blockProfileRecord struct {
 	Count  int64
@@ -93,11 +83,11 @@ func writeAlloc(w io.Writer) error {
 
 func writeHeapInternal(w io.Writer, defaultSampleType string) error {
 	var profile []memProfileRecord
-	n, _ := runtimeMemProfileInternal(nil, true)
+	n, _ := runtime.MemProfile(nil, true)
 	var ok bool
 	for {
 		profile = make([]memProfileRecord, n+50)
-		n, ok = runtimeMemProfileInternal(profile, true)
+		n, ok = runtime.MemProfile(profile, true)
 		if ok {
 			profile = profile[:n]
 			break
@@ -319,7 +309,7 @@ func writeHeapProto(w io.Writer, profile []memProfileRecord, rate int64, default
 	for _, record := range profile {
 		hideRuntime := true
 		for range 2 {
-			stk := record.Stack
+			stk := record.Stack()
 			if hideRuntime {
 				for i, addr := range stk {
 					if f := runtime.FuncForPC(addr); f != nil && (strings.HasPrefix(f.Name(), "runtime.") || strings.HasPrefix(f.Name(), "internal/runtime/")) {

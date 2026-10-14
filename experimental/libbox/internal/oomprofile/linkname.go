@@ -9,9 +9,6 @@ import (
 	_ "unsafe"
 )
 
-//go:linkname runtimeMemProfileInternal runtime.pprof_memProfileInternal
-func runtimeMemProfileInternal(p []memProfileRecord, inuseZero bool) (n int, ok bool)
-
 //go:linkname runtimeBlockProfileInternal runtime.pprof_blockProfileInternal
 func runtimeBlockProfileInternal(p []blockProfileRecord) (n int, ok bool)
 

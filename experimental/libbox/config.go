@@ -7,9 +7,11 @@ import (
 	"os"
 	"reflect"
 	"slices"
+	"time"
 
 	box "github.com/sagernet/sing-box"
 	"github.com/sagernet/sing-box/adapter"
+	"github.com/sagernet/sing-box/common/urltest"
 	C "github.com/sagernet/sing-box/constant"
 	"github.com/sagernet/sing-box/dns"
 	"github.com/sagernet/sing-box/include"
@@ -67,7 +69,107 @@ func CheckConfig(configContent string) error {
 	return err
 }
 
+// ProbeOutbounds returns JSON containing the effective default tag and usable
+// non-direct candidate tags for an explicit probe selection.
+func ProbeOutbounds(configContent string) (string, error) {
+	ctx := baseContext(nil)
+	options, err := parseConfig(ctx, configContent)
+	if err != nil {
+		return "", err
+	}
+	defaultTag := ""
+	if options.Route != nil {
+		defaultTag = options.Route.Final
+	}
+	if defaultTag == "" && len(options.Outbounds) > 0 {
+		defaultTag = options.Outbounds[0].Tag
+	}
+	defaultUsable := false
+	tags := make([]string, 0, len(options.Outbounds))
+	for index, outbound := range options.Outbounds {
+		if (defaultTag != "" && outbound.Tag == defaultTag || defaultTag == "" && index == 0) &&
+			outbound.Type != C.TypeDirect && outbound.Type != C.TypeBlock {
+			defaultUsable = true
+		}
+		if outbound.Tag != "" && outbound.Type != C.TypeDirect && outbound.Type != C.TypeBlock {
+			tags = append(tags, outbound.Tag)
+		}
+	}
+	encoded, err := json.Marshal(struct {
+		Default       string   `json:"default"`
+		DefaultUsable bool     `json:"defaultUsable"`
+		Candidates    []string `json:"candidates"`
+	}{defaultTag, defaultUsable, tags})
+	return string(encoded), err
+}
+
+// ProbeConfig starts the outbound side of a temporary box only. Inbounds,
+// including TUN, are never started. The caller controls the overall deadline.
+func ProbeConfig(configContent string, outboundTag string, timeoutMilliseconds int32) (bool, error) {
+	if timeoutMilliseconds <= 0 {
+		return false, os.ErrInvalid
+	}
+	ctx := baseContext(nil)
+	options, err := parseConfig(ctx, configContent)
+	if err != nil {
+		return false, err
+	}
+	ctx, cancel := context.WithTimeout(ctx, time.Duration(timeoutMilliseconds)*time.Millisecond)
+	defer cancel()
+	ctx = service.ContextWith[adapter.PlatformInterface](ctx, &probePlatformInterface{})
+	instance, err := box.New(box.Options{Context: ctx, Options: options})
+	if err != nil {
+		return false, err
+	}
+	if err = instance.PreStart(); err != nil {
+		return false, err // PreStart closes the instance on failure.
+	}
+	defer instance.Close()
+	var selected adapter.Outbound
+	if outboundTag == "" {
+		selected = instance.Outbound().Default()
+	} else {
+		selected, _ = instance.Outbound().Outbound(outboundTag)
+	}
+	if selected == nil || selected.Type() == C.TypeDirect || selected.Type() == C.TypeBlock {
+		return false, E.New("choose a non-direct outbound for the probe")
+	}
+	for visited := make(map[string]bool); ; {
+		group, isGroup := selected.(adapter.OutboundGroup)
+		if !isGroup {
+			break
+		}
+		next := group.Now()
+		if visited[next] {
+			return false, E.New("outbound selection cycle")
+		}
+		visited[next] = true
+		selected, _ = instance.Outbound().Outbound(next)
+		if selected == nil || selected.Type() == C.TypeDirect || selected.Type() == C.TypeBlock {
+			return false, E.New("choose a non-direct outbound for the probe")
+		}
+	}
+	for _, target := range []string{
+		"https://www.gstatic.com/generate_204",
+		"https://www.cloudflare.com/cdn-cgi/trace",
+	} {
+		if ctx.Err() != nil {
+			break
+		}
+		if _, err := urltest.URLTest(ctx, target, selected); err == nil {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 type platformInterfaceStub struct{}
+
+type probePlatformInterface struct{ platformInterfaceStub }
+
+func (s *probePlatformInterface) UsePlatformDefaultInterfaceMonitor() bool {
+	return false
+}
 
 func (s *platformInterfaceStub) Initialize(networkManager adapter.NetworkManager) error {
 	return nil

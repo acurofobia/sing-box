@@ -30,6 +30,7 @@ var (
 )
 
 type Selector struct {
+	selectOutboundHandler func(string) bool
 	outbound.Adapter
 	ctx                          context.Context
 	outbound                     adapter.OutboundManager
@@ -120,7 +121,20 @@ func (s *Selector) All() []string {
 	return s.tags
 }
 
+// SetSelectOutboundHandler is configured before Start by an instance-owned policy.
+func (s *Selector) SetSelectOutboundHandler(handler func(string) bool) {
+	s.selectOutboundHandler = handler
+}
+
 func (s *Selector) SelectOutbound(tag string) bool {
+	if s.selectOutboundHandler != nil {
+		return s.selectOutboundHandler(tag)
+	}
+	return s.SelectOutboundAutomatic(tag)
+}
+
+// SelectOutboundAutomatic bypasses the external-selection handler for policy decisions.
+func (s *Selector) SelectOutboundAutomatic(tag string) bool {
 	detour, loaded := s.outbounds[tag]
 	if !loaded {
 		return false

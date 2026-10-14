@@ -3,6 +3,9 @@ package daemon
 import (
 	"bytes"
 	"context"
+	"errors"
+	"github.com/sagernet/sing-box/protocol/group"
+	"github.com/sagernet/sing/common/x/list"
 
 	"github.com/sagernet/sing-box"
 	"github.com/sagernet/sing-box/adapter"
@@ -22,6 +25,8 @@ import (
 )
 
 type Instance struct {
+	priorityFailover      *priorityFailoverController
+	priorityPauseCallback *list.Element[pause.Callback]
 	ctx                   context.Context
 	cancel                context.CancelFunc
 	instance              *box.Box
@@ -74,9 +79,10 @@ func (s *StartedService) FormatConfig(ctx context.Context, configContent string)
 }
 
 type OverrideOptions struct {
-	AutoRedirect   bool
-	IncludePackage []string
-	ExcludePackage []string
+	PriorityFailoverJSON string
+	AutoRedirect         bool
+	IncludePackage       []string
+	ExcludePackage       []string
 }
 
 func (s *StartedService) newInstance(ctx context.Context, profileContent string, overrideOptions *OverrideOptions) (*Instance, error) {
@@ -100,6 +106,14 @@ func (s *StartedService) newInstance(ctx context.Context, profileContent string,
 			}
 		}
 	}
+	var policy *PriorityFailoverPolicy
+	if overrideOptions != nil {
+		policy, err = ParsePriorityFailover(options, overrideOptions.PriorityFailoverJSON)
+		if err != nil {
+			cancel()
+			return nil, err
+		}
+	}
 	if s.oomKillerEnabled {
 		if !common.Any(options.Services, func(it option.Service) bool {
 			return it.Type == C.TypeOOMKiller
@@ -121,7 +135,12 @@ func (s *StartedService) newInstance(ctx context.Context, profileContent string,
 		cancel:                cancel,
 		urlTestHistoryStorage: urlTestHistoryStorage,
 	}
+	var onOutboundsReady func(context.Context) error
+	if policy != nil {
+		onOutboundsReady = func(ctx context.Context) error { i.priorityFailover.cycle(true); return ctx.Err() }
+	}
 	boxInstance, err := box.New(box.Options{
+		OnOutboundsReady:  onOutboundsReady,
 		Context:           ctx,
 		Options:           options,
 		PlatformLogWriter: s,
@@ -139,6 +158,27 @@ func (s *StartedService) newInstance(ctx context.Context, profileContent string,
 	i.outboundManager = service.FromContext[adapter.OutboundManager](ctx)
 	i.endpointManager = service.FromContext[adapter.EndpointManager](ctx)
 	i.logFactory = boxInstance.LogFactory()
+	if policy != nil {
+		outbound, ok := i.outboundManager.Outbound(policy.Selector)
+		selector, isSelector := outbound.(*group.Selector)
+		if !ok || !isSelector {
+			cancel()
+			boxInstance.Close()
+			return nil, errors.New("priority failover selector missing")
+		}
+		i.priorityFailover, err = newPriorityFailoverController(ctx, *policy, &priorityInstanceBackend{i, selector})
+		if err != nil {
+			cancel()
+			boxInstance.Close()
+			return nil, err
+		}
+		selector.SetSelectOutboundHandler(func(tag string) bool { return i.priorityFailover.Manual(tag) == nil })
+		i.priorityFailover.transition = func(state PriorityFailoverState) {
+			i.logFactory.Logger().Info("priority failover: ", state.Mode, " selected=", state.Selected, " primary=", state.PrimaryHealth, " all_down=", state.AllDown)
+		}
+		i.priorityPauseCallback = i.pauseManager.RegisterCallback(func(event int) { i.priorityFailover.SetPaused(i.pauseManager.IsPaused()) })
+		i.priorityFailover.SetPaused(i.pauseManager.IsPaused())
+	}
 	log.SetStdLogger(boxInstance.LogFactory().Logger())
 	return i, nil
 }
@@ -159,11 +199,21 @@ func attachInstance(ctx context.Context) *Instance {
 }
 
 func (i *Instance) Start() error {
-	return i.instance.Start()
+	if err := i.instance.Start(); err != nil {
+		return err
+	}
+	if i.priorityFailover != nil {
+		i.priorityFailover.Start()
+	}
+	return nil
 }
 
 func (i *Instance) Close() error {
 	i.cancel()
+	if i.priorityFailover != nil {
+		i.pauseManager.UnregisterCallback(i.priorityPauseCallback)
+		i.priorityFailover.Close()
+	}
 	i.urlTestHistoryStorage.Close()
 	return i.instance.Close()
 }

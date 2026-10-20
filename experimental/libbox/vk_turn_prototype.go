@@ -24,13 +24,15 @@ type VKTurnPrototypeSession struct {
 // by sing-box from the returned configuration, within the same Go runtime.
 func StartVKTurnPrototype(input string) (*VKTurnPrototypeSession, error) {
 	var settings struct {
-		Route      json.RawMessage        `json:"route"`
-		Generation int64                  `json:"generation"`
-		Baseline   bool                   `json:"baseline"`
-		Mode       string                 `json:"mode"`
-		VLESS      json.RawMessage        `json:"vless"`
-		WireGuard  vkturn.WireGuardConfig `json:"wireguard"`
-		Proxy      struct {
+		Route          json.RawMessage        `json:"route"`
+		Generation     int64                  `json:"generation"`
+		Baseline       bool                   `json:"baseline"`
+		Mode           string                 `json:"mode"`
+		VLESS          json.RawMessage        `json:"vless"`
+		VLESSOutbounds []json.RawMessage      `json:"vless_outbounds"`
+		VLESSPrimary   string                 `json:"vless_primary"`
+		WireGuard      vkturn.WireGuardConfig `json:"wireguard"`
+		Proxy          struct {
 			VKLink     string `json:"vk_link"`
 			PeerAddr   string `json:"peer_addr"`
 			UseUDP     bool   `json:"use_udp"`
@@ -51,6 +53,13 @@ func StartVKTurnPrototype(input string) (*VKTurnPrototypeSession, error) {
 		return &VKTurnPrototypeSession{Configuration: text}, err
 	}
 	if settings.Mode == "vless" {
+		if settings.VLESSOutbounds != nil || settings.VLESSPrimary != "" {
+			if len(settings.VLESS) != 0 {
+				return nil, fmt.Errorf("conflicting VLESS inputs")
+			}
+			text, err := vkturn.BuildVLESSFailoverConfiguration(settings.Route, settings.VLESSOutbounds, settings.VLESSPrimary)
+			return &VKTurnPrototypeSession{Configuration: text}, err
+		}
 		text, err := vkturn.BuildVLESSConfiguration(settings.Route, settings.VLESS)
 		return &VKTurnPrototypeSession{Configuration: text}, err
 	}

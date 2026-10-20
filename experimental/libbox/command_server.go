@@ -31,6 +31,7 @@ import (
 type CommandServer struct {
 	*daemon.StartedService
 	ctx               context.Context
+	cancel            context.CancelFunc
 	managedService    *daemon.ManagedService
 	handler           CommandServerHandler
 	platformInterface PlatformInterface
@@ -53,7 +54,7 @@ type CommandServerHandler interface {
 }
 
 func NewCommandServer(handler CommandServerHandler, platformInterface PlatformInterface) (*CommandServer, error) {
-	ctx := baseContext(platformInterface)
+	ctx, cancel := context.WithCancel(baseContext(platformInterface))
 	powerManager := powerreport.NewManager()
 	service.MustRegister[*powerreport.Manager](ctx, powerManager)
 	platformWrapper := &platformInterfaceWrapper{
@@ -64,6 +65,7 @@ func NewCommandServer(handler CommandServerHandler, platformInterface PlatformIn
 	service.MustRegister[adapter.PlatformInterface](ctx, platformWrapper)
 	server := &CommandServer{
 		ctx:               ctx,
+		cancel:            cancel,
 		handler:           handler,
 		platformInterface: platformInterface,
 		platformWrapper:   platformWrapper,
@@ -193,6 +195,7 @@ func (s *CommandServer) Start() error {
 }
 
 func (s *CommandServer) Close() {
+	s.CancelServiceStart()
 	if s.endPauseTimer != nil {
 		s.endPauseTimer.Stop()
 	}
@@ -213,6 +216,9 @@ type OverrideOptions struct {
 }
 
 func (s *CommandServer) StartOrReloadService(configContent string, options *OverrideOptions) error {
+	if err := s.ctx.Err(); err != nil {
+		return err
+	}
 	saveConfigSnapshot(configContent)
 	if s.powerManager.Recorder() != nil {
 		copyConfigSnapshot(filepath.Join(sWorkingPath, powerreport.DraftDirectoryName))
@@ -231,6 +237,15 @@ func (s *CommandServer) StartOrReloadService(configContent string, options *Over
 
 func (s *CommandServer) CloseService() error {
 	return s.StartedService.CloseService()
+}
+
+// CancelServiceStart latches cancellation for this server's lifetime. A provider
+// shutting down can interrupt cold probes and rule downloads without closing
+// command/platform resources until its asynchronous startup has unwound.
+func (s *CommandServer) CancelServiceStart() {
+	if s.cancel != nil {
+		s.cancel()
+	}
 }
 
 func (s *CommandServer) WriteMessage(level int32, message string) {

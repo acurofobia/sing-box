@@ -1,8 +1,11 @@
 package vkturn
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"regexp"
+	"strings"
 )
 
 // WireGuardConfig carries only the keys and address provisioned for native sing-box WireGuard.
@@ -111,3 +114,108 @@ func BuildVLESSConfiguration(route, node json.RawMessage) (string, error) {
 	data, err := json.Marshal(config)
 	return string(data), err
 }
+
+// BuildVLESSFailoverConfiguration builds one selector around four provisioned
+// nodes. Policy remains an external Libbox override, never a sing-box JSON key.
+func BuildVLESSFailoverConfiguration(route json.RawMessage, nodes []json.RawMessage, primary string) (string, error) {
+	if len(nodes) != 4 {
+		return "", fmt.Errorf("four VLESS outbounds required")
+	}
+	baseline, err := BuildConfiguration(route, nil, 0)
+	if err != nil {
+		return "", err
+	}
+	var config map[string]json.RawMessage
+	if err = json.Unmarshal([]byte(baseline), &config); err != nil {
+		return "", err
+	}
+	tags := make([]string, 0, 4)
+	seen := map[string]bool{"direct": true, "vk-wg": true}
+	outbounds := []any{map[string]string{"type": "direct", "tag": "direct"}}
+	for _, node := range nodes {
+		outbound, tag, err := validateFailoverVLESS(node)
+		if err != nil {
+			return "", err
+		}
+		if seen[tag] {
+			return "", fmt.Errorf("duplicate or reserved VLESS tag")
+		}
+		seen[tag] = true
+		tags = append(tags, tag)
+		outbound["domain_resolver"] = json.RawMessage(`{"server":"bootstrap","strategy":"ipv4_only"}`)
+		outbounds = append(outbounds, outbound)
+	}
+	found := false
+	for _, tag := range tags {
+		if tag == primary {
+			found = true
+		}
+	}
+	if !found {
+		return "", fmt.Errorf("VLESS primary missing")
+	}
+	outbounds = append(outbounds, map[string]any{"type": "selector", "tag": "vk-wg", "outbounds": tags, "default": primary, "interrupt_exist_connections": true})
+	config["outbounds"], err = json.Marshal(outbounds)
+	if err != nil {
+		return "", err
+	}
+	config["dns"] = json.RawMessage(`{"servers":[{"type":"udp","tag":"dns","server":"1.1.1.1","detour":"vk-wg"},{"type":"udp","tag":"bootstrap","server":"1.1.1.1"}],"final":"dns","strategy":"ipv4_only"}`)
+	data, err := json.Marshal(config)
+	return string(data), err
+}
+
+func validateFailoverVLESS(node json.RawMessage) (map[string]json.RawMessage, string, error) {
+	var fields struct {
+		Type   string `json:"type"`
+		Tag    string `json:"tag"`
+		Server string `json:"server"`
+		Port   int    `json:"server_port"`
+		UUID   string `json:"uuid"`
+		Flow   string `json:"flow"`
+		TLS    struct {
+			Enabled    bool   `json:"enabled"`
+			ServerName string `json:"server_name"`
+			UTLS       struct {
+				Enabled     bool   `json:"enabled"`
+				Fingerprint string `json:"fingerprint"`
+			} `json:"utls"`
+			Reality struct {
+				Enabled   bool   `json:"enabled"`
+				PublicKey string `json:"public_key"`
+				ShortID   string `json:"short_id"`
+			} `json:"reality"`
+			ALPN []string `json:"alpn"`
+		} `json:"tls"`
+	}
+	decoder := json.NewDecoder(bytes.NewReader(node))
+	decoder.DisallowUnknownFields()
+	if decoder.Decode(&fields) != nil || fields.Type != "vless" || !failoverTag.MatchString(fields.Tag) ||
+		fields.Server == "" || strings.ContainsAny(fields.Server, " \t\r\n") || fields.Port < 1 || fields.Port > 65535 ||
+		!failoverUUID.MatchString(fields.UUID) || (fields.Flow != "" && fields.Flow != "xtls-rprx-vision") ||
+		!fields.TLS.Enabled || fields.TLS.ServerName == "" || !fields.TLS.UTLS.Enabled ||
+		!fields.TLS.Reality.Enabled || !failoverPublicKey.MatchString(fields.TLS.Reality.PublicKey) || !failoverShortID.MatchString(fields.TLS.Reality.ShortID) {
+		return nil, "", fmt.Errorf("invalid failover VLESS outbound")
+	}
+	switch fields.TLS.UTLS.Fingerprint {
+	case "chrome", "firefox", "edge", "safari", "ios", "android", "random", "randomized", "360", "qq":
+	default:
+		return nil, "", fmt.Errorf("invalid failover VLESS fingerprint")
+	}
+	for _, alpn := range fields.TLS.ALPN {
+		if alpn == "" {
+			return nil, "", fmt.Errorf("invalid failover VLESS ALPN")
+		}
+	}
+	var outbound map[string]json.RawMessage
+	if err := json.Unmarshal(node, &outbound); err != nil {
+		return nil, "", fmt.Errorf("invalid failover VLESS outbound")
+	}
+	return outbound, fields.Tag, nil
+}
+
+var (
+	failoverTag       = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,64}$`)
+	failoverUUID      = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
+	failoverPublicKey = regexp.MustCompile(`^[A-Za-z0-9_-]{43}$`)
+	failoverShortID   = regexp.MustCompile(`^(?:[0-9a-fA-F]{2}){0,8}$`)
+)

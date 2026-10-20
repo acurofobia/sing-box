@@ -247,3 +247,18 @@ func TestPriorityInitialUnpausedDoesNotQueueCycle(t *testing.T) {
 		t.Fatal("initial active state queued an extra startup cycle")
 	}
 }
+
+func TestPriorityKeepsHealthyBackupWhenHigherBackupRecovers(t *testing.T) {
+	b := &priorityTestBackend{selected: "b2", results: map[string][]bool{"p": {false, false}, "b2": {true, true}, "b1": {true, true}}}
+	c := testPriorityController(t, b)
+	c.cycle(false)
+	c.cycle(false)
+	if b.Selected() != "b2" || len(b.calls) != 4 {
+		t.Fatalf("selected=%s calls=%v", b.Selected(), b.calls)
+	}
+	for _, tag := range b.calls {
+		if tag == "b1" {
+			t.Fatal("probed unnecessary backup")
+		}
+	}
+}

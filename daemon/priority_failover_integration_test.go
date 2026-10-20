@@ -4,16 +4,21 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/sagernet/sing-box/experimental/cachefile"
+	"github.com/sagernet/sing-box/log"
+	"github.com/sagernet/sing-box/option"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strconv"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	box "github.com/sagernet/sing-box"
+	"github.com/sagernet/sing-box/adapter"
 	"github.com/sagernet/sing-box/adapter/certificate"
 	"github.com/sagernet/sing-box/adapter/endpoint"
 	"github.com/sagernet/sing-box/adapter/inbound"
@@ -162,7 +167,9 @@ func prioritySOCKS(t *testing.T) uint16 {
 	}()
 	return uint16(listener.Addr().(*net.TCPAddr).Port)
 }
-func TestPriorityColdStartupBeforeRuleSet(t *testing.T) {
+func TestPriorityColdStartupBeforeRuleSet(t *testing.T)             { testPriorityColdStartup(t, "") }
+func TestPriorityColdStartupOverridesCachedDeadBackup(t *testing.T) { testPriorityColdStartup(t, "b2") }
+func testPriorityColdStartup(t *testing.T, cached string) {
 	var instance *Instance
 	var selectedAtFetch string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -187,6 +194,26 @@ func TestPriorityColdStartupBeforeRuleSet(t *testing.T) {
 	local.RegisterTransport(dnsRegistry)
 	ctx := box.Context(context.Background(), inbound.NewRegistry(), outboundRegistry, endpoint.NewRegistry(), dnsRegistry, boxservice.NewRegistry(), certificate.NewRegistry())
 	ctx = filemanager.WithDefault(service.ExtendContext(ctx), t.TempDir(), t.TempDir(), -1, -1)
+	if cached != "" {
+		cachePath := filepath.Join(t.TempDir(), "cache.db")
+		cache := cachefile.New(ctx, log.NewNOPFactory().Logger(), option.CacheFileOptions{Path: cachePath})
+		if err := cache.Start(adapter.StartStateInitialize); err != nil {
+			t.Fatal(err)
+		}
+		if err := cache.StoreSelected("proxy", cached); err != nil {
+			t.Fatal(err)
+		}
+		if err := cache.Close(); err != nil {
+			t.Fatal(err)
+		}
+		var raw map[string]any
+		if err := json.Unmarshal([]byte(config), &raw); err != nil {
+			t.Fatal(err)
+		}
+		raw["experimental"] = map[string]any{"cache_file": map[string]any{"enabled": true, "path": cachePath}}
+		encoded, _ := json.Marshal(raw)
+		config = string(encoded)
+	}
 	started := NewStartedService(ServiceOptions{Context: ctx})
 	defer started.Close()
 	policy, _ := json.Marshal(testPriorityPolicy())

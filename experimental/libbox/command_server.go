@@ -74,12 +74,13 @@ func NewCommandServer(handler CommandServerHandler, platformInterface PlatformIn
 	server.StartedService = daemon.NewStartedService(daemon.ServiceOptions{
 		Context: ctx,
 		// Platform:         platformWrapper,
-		Handler:           (*platformHandler)(server),
-		Debug:             sDebug,
-		LogMaxLines:       sLogMaxLines,
-		OOMKillerEnabled:  sOOMKillerEnabled,
-		OOMKillerDisabled: sOOMKillerDisabled,
-		OOMMemoryLimit:    uint64(sOOMMemoryLimit),
+		Handler:              (*platformHandler)(server),
+		Debug:                sDebug,
+		DiagnosticLogEnabled: sDiagnosticLogEnabled,
+		LogMaxLines:          sLogMaxLines,
+		OOMKillerEnabled:     sOOMKillerEnabled,
+		OOMKillerDisabled:    sOOMKillerDisabled,
+		OOMMemoryLimit:       uint64(sOOMMemoryLimit),
 		// WorkingDirectory: sWorkingPath,
 		// TempDirectory:    sTempPath,
 		// UserID:           sUserID,
@@ -304,13 +305,14 @@ func (s *CommandServer) Wake() {
 	if recorder != nil {
 		recorder.RecordPlatformEvent("ne-wake")
 	}
+	if s.endPauseTimer != nil {
+		s.endPauseTimer.Stop()
+	}
 	instance := s.StartedService.Instance()
 	if instance == nil || instance.PauseManager() == nil {
 		return
 	}
-	if !C.IsIos {
-		instance.PauseManager().DeviceWake()
-	}
+	instance.PauseManager().DeviceWake()
 }
 
 func (s *CommandServer) ResetNetwork() {

@@ -44,11 +44,12 @@ var _ StartedServiceServer = (*StartedService)(nil)
 type StartedService struct {
 	ctx context.Context
 	// platform adapter.PlatformInterface
-	handler           PlatformHandler
-	debug             bool
-	oomKillerEnabled  bool
-	oomKillerDisabled bool
-	oomMemoryLimit    uint64
+	handler              PlatformHandler
+	debug                bool
+	diagnosticLogEnabled bool
+	oomKillerEnabled     bool
+	oomKillerDisabled    bool
+	oomMemoryLimit       uint64
 	// workingDirectory string
 	// tempDirectory    string
 	// userID           int
@@ -78,12 +79,13 @@ type StartedService struct {
 type ServiceOptions struct {
 	Context context.Context
 	// Platform           adapter.PlatformInterface
-	Handler           PlatformHandler
-	Debug             bool
-	LogMaxLines       int
-	OOMKillerEnabled  bool
-	OOMKillerDisabled bool
-	OOMMemoryLimit    uint64
+	Handler              PlatformHandler
+	Debug                bool
+	DiagnosticLogEnabled bool
+	LogMaxLines          int
+	OOMKillerEnabled     bool
+	OOMKillerDisabled    bool
+	OOMMemoryLimit       uint64
 	// WorkingDirectory   string
 	// TempDirectory      string
 	// UserID             int
@@ -95,12 +97,13 @@ func NewStartedService(options ServiceOptions) *StartedService {
 	s := &StartedService{
 		ctx: options.Context,
 		// platform:                options.Platform,
-		handler:           options.Handler,
-		debug:             options.Debug,
-		logLines:          logRing{maxLines: options.LogMaxLines},
-		oomKillerEnabled:  options.OOMKillerEnabled,
-		oomKillerDisabled: options.OOMKillerDisabled,
-		oomMemoryLimit:    options.OOMMemoryLimit,
+		handler:              options.Handler,
+		debug:                options.Debug,
+		diagnosticLogEnabled: options.DiagnosticLogEnabled,
+		logLines:             logRing{maxLines: options.LogMaxLines},
+		oomKillerEnabled:     options.OOMKillerEnabled,
+		oomKillerDisabled:    options.OOMKillerDisabled,
+		oomMemoryLimit:       options.OOMMemoryLimit,
 		// workingDirectory: options.WorkingDirectory,
 		// tempDirectory:    options.TempDirectory,
 		// userID:           options.UserID,
@@ -2106,7 +2109,7 @@ func (s *StartedService) WriteMessage(level log.Level, message string) {
 	s.logLines.push(item)
 	s.logAccess.Unlock()
 	s.logSubscriber.Emit(item)
-	if s.debug {
+	if s.debug || s.diagnosticLogEnabled {
 		s.handler.WriteDebugMessage(message)
 	}
 }

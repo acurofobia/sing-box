@@ -30,6 +30,7 @@ var (
 	sCommandServerSecret     string
 	sLogMaxLines             int
 	sDebug                   bool
+	sDiagnosticLogEnabled    bool
 	sCrashReportSource       string
 	sAppVersion              string
 	sAppMarketingVersion     string
@@ -53,6 +54,7 @@ type SetupOptions struct {
 	CommandServerSecret     string
 	LogMaxLines             int
 	Debug                   bool
+	DiagnosticLogEnabled    bool
 	CrashReportSource       string
 	AppVersion              string
 	AppMarketingVersion     string
@@ -78,6 +80,7 @@ func applySetupOptions(options *SetupOptions) {
 	sCommandServerSecret = options.CommandServerSecret
 	sLogMaxLines = options.LogMaxLines
 	sDebug = options.Debug
+	sDiagnosticLogEnabled = options.DiagnosticLogEnabled
 	sCrashReportSource = options.CrashReportSource
 	sAppVersion = options.AppVersion
 	sAppMarketingVersion = options.AppMarketingVersion

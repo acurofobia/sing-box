@@ -37,11 +37,22 @@ func (p PriorityFailoverPolicy) Validate() error {
 }
 
 type PriorityFailoverState struct {
-	Mode          string `json:"mode"`
-	Selector      string `json:"selector,omitempty"`
-	Selected      string `json:"selected,omitempty"`
-	PrimaryHealth string `json:"primaryHealth,omitempty"`
-	AllDown       bool   `json:"allDown"`
+	Mode           string                    `json:"mode"`
+	Selector       string                    `json:"selector,omitempty"`
+	Selected       string                    `json:"selected,omitempty"`
+	PrimaryHealth  string                    `json:"primaryHealth,omitempty"`
+	AllDown        bool                      `json:"allDown"`
+	Checking       string                    `json:"checking,omitempty"`
+	SelectedHealth string                    `json:"selectedHealth,omitempty"`
+	SelectedIndex  int                       `json:"selectedIndex,omitempty"`
+	CheckingIndex  int                       `json:"checkingIndex,omitempty"`
+	Total          int                       `json:"total,omitempty"`
+	Servers        [4]PriorityFailoverServer `json:"servers"`
+}
+
+type PriorityFailoverServer struct {
+	Tag    string `json:"tag"`
+	Health string `json:"health"`
 }
 type priorityFailoverBackend interface {
 	Probe(context.Context, string) (bool, error)
@@ -62,6 +73,7 @@ type priorityFailoverController struct {
 	manual, paused, closed bool
 	failures, recoveries   int32
 	state                  PriorityFailoverState
+	observedAt             [4]time.Time
 	wake                   chan struct{}
 	done                   chan struct{}
 	started                bool
@@ -81,12 +93,30 @@ func (c *priorityFailoverController) Status() PriorityFailoverState {
 	defer c.access.Unlock()
 	s := c.state
 	s.Selected = c.backend.Selected()
+	candidates := append([]string{c.policy.Primary}, c.policy.Backups...)
+	s.SelectedIndex = slices.Index(candidates, s.Selected) + 1
+	s.CheckingIndex = slices.Index(candidates, s.Checking) + 1
+	s.Total = len(candidates)
+	for i, tag := range candidates {
+		s.Servers[i].Tag = tag
+		freshness := time.Duration(2*c.policy.IntervalMilliseconds+c.policy.TimeoutMilliseconds) * time.Millisecond
+		if s.Servers[i].Health == "" || time.Since(c.observedAt[i]) > freshness {
+			s.Servers[i].Health = "unknown"
+		}
+	}
+	if s.SelectedIndex > 0 && s.Servers[s.SelectedIndex-1].Health == "unknown" {
+		s.SelectedHealth = "unknown"
+	}
 	return s
 }
 func (c *priorityFailoverController) invalidateLocked() {
 	c.generation++
 	c.failures = 0
 	c.recoveries = 0
+	c.state.Checking = ""
+	c.state.SelectedHealth = "unknown"
+	c.state.Servers = [4]PriorityFailoverServer{}
+	c.observedAt = [4]time.Time{}
 	if c.operationCancel != nil {
 		c.operationCancel()
 	}
@@ -128,7 +158,10 @@ func (c *priorityFailoverController) SetPaused(paused bool) {
 	c.access.Lock()
 	changed := c.paused != paused
 	if changed {
+		// Sleep cancels in-flight observations, not completed failures.
+		failures := c.failures
 		c.invalidateLocked()
+		c.failures = failures
 		c.paused = paused
 	}
 	c.access.Unlock()
@@ -207,10 +240,37 @@ func (c *priorityFailoverController) cycle(initial bool) {
 		if value, ok := known[tag]; ok {
 			return value
 		}
+		c.access.Lock()
+		if c.generation != generation || ctx.Err() != nil {
+			c.access.Unlock()
+			return false
+		}
+		c.state.Checking = tag
+		c.access.Unlock()
 		probeCtx, probeCancel := context.WithTimeout(ctx, time.Duration(c.policy.TimeoutMilliseconds)*time.Millisecond)
 		ok, err := c.backend.Probe(probeCtx, tag)
 		probeCancel()
 		known[tag] = ok && err == nil
+		c.access.Lock()
+		if c.generation == generation {
+			c.state.Checking = ""
+			candidates := append([]string{c.policy.Primary}, c.policy.Backups...)
+			if index := slices.Index(candidates, tag); index >= 0 {
+				health := "down"
+				if known[tag] {
+					health = "up"
+				}
+				c.state.Servers[index] = PriorityFailoverServer{Tag: tag, Health: health}
+				c.observedAt[index] = time.Now()
+			}
+			if tag == c.backend.Selected() {
+				c.state.SelectedHealth = "down"
+				if known[tag] {
+					c.state.SelectedHealth = "up"
+				}
+			}
+		}
+		c.access.Unlock()
 		return known[tag]
 	}
 	primaryOK := probe(c.policy.Primary)
@@ -265,6 +325,12 @@ func (c *priorityFailoverController) cycle(initial bool) {
 	c.state.PrimaryHealth = primaryHealth
 	c.state.AllDown = allDown
 	c.state.Selected = c.backend.Selected()
+	if healthy, checked := known[c.state.Selected]; checked {
+		c.state.SelectedHealth = "down"
+		if healthy {
+			c.state.SelectedHealth = "up"
+		}
+	}
 	if c.transition != nil && oldState != c.state {
 		c.transition(c.state)
 	}
